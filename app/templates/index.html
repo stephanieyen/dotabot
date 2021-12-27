@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" type="text/css" href="/static/style.css">
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+    <title>DOTA Bot</title>
+  </head>
+
+  <body>
+    <h1>DOTA Bot</h1>
+    <h3>A web implementation of a chatbot.</h3>
+    
+    <div>
+      <div id="chatbox">
+        <p class="botText"><span>Hi! I'm DOTA Bot.</span></p>
+      </div>
+      <div id="userInput">
+        <input id="textInput" type="text" placeholder="Message">
+        <input id="buttonInput" type="submit" value="Send">
+      </div>
+    </div>
+
+    <div id="queries">
+      <h3>Supported queries</h3>
+      <ol>
+        {% for query in queries %}
+        <li>{{query}}</li>
+        {% endfor %}
+      </ol>
+    </div>
+
+    <div id="instructions">
+      <h3>Instructions</h3>
+      <ol>
+        <li>Enter the number associated with your desired question.</li>
+        <li>Enter the details when prompted with the required data that I need to answer your question.</li>
+      </ol>
+    </div>
+    
+    <script>
+      // --- Global variables ---
+      var inProgress = false;   // Bot is idle until user inputs a number
+      var requirementsData;     // After user inputs a number, bot fetches and displays the requirements for its associated query
+      var mappedReqValues = {}; // After user inputs data for the requirements, key-value pairs are established in this dict
+
+      // --- Utility functions ---
+      function handleError(jqXHR, statusText, error) {
+        console.log(error);
+        // Last-resort error/redirection (e.g., in case of POST 500s)
+        showBot("Oops! That didn't work. Try again with a supported query ID.")
+        inProgress = false;
+      };
+
+      function showUser(text) {
+        var userHtml = '<p class="userText"><span>' + text + '</span></p>';
+        $("#textInput").val("");
+        $("#chatbox").append(userHtml);
+        document.getElementById('userInput').scrollIntoView({block: 'start', behavior: 'smooth'});
+      };
+
+      function showBot(text) {
+        var botHtml = '<p class="botText"><span>' + text + '</span></p>';
+        $("#chatbox").append(botHtml);
+        document.getElementById('userInput').scrollIntoView({block: 'start', behavior: 'smooth'});
+      };
+
+      /**
+       * Maps the requirements of a specified question to the user's data inputs for such requirements.
+       * 
+       * @param {string} requirementsData: Requirements of the specified question, each separated with a comma.
+       * @param {string} userData:         User inputs for the requirements, in a parallel order, each separated with a comma. 
+       * @return {dict}  mappedReqValues:  Dict with requirements (keys) mapped to user data inputs (values).
+       *                                   An additional 'id' key has been added before, when the user first specified their question via query ID.
+       */ 
+      function getMappedReqValues(requirementsData, userData) {
+        // Parse strings into arrays
+        if(requirementsData == "none (type/enter any letter to continue)") {
+          mappedReqValues['noReq'] = userData;
+        } else {
+          requirementsArr = requirementsData.split(', ');   // EX: [du_name, du_promotion_stage]
+          userArr = userData.split(', ')                      // EX: [sas-cas-server, PROD]
+          
+          // Loop through the arrays and add key-value pairs
+          requirementsArr.forEach((requirement, index) => {
+            var value = userArr[index];
+            mappedReqValues[requirement] = value
+          })
+        }
+
+        console.log(mappedReqValues)        
+        return mappedReqValues                            // EX: { 'id': 1, 'du_name': 'sas-cas-server', 'du_promotion_stage': 'PROD' }
+      };
+      
+      // --- Steps ---
+
+      /** 
+       * FIRST STEP :: GET request to return requirements to user's specified question.
+       * User kicks off the process of entering one question (inProgress = true).
+       */ 
+      function getRequirements() {
+        var queryID = $("#textInput").val();
+        showUser(queryID);
+        console.log("Received query ID: " + queryID);
+        
+        $.ajax({
+          type: 'GET',
+          url: '/question',
+          data: { id: queryID },
+
+          success: function(requirements) { 
+            // Update global variables
+            requirementsData = requirements;
+            mappedReqValues['id'] = queryID; // ID is used for bot to determine which question it is answering
+            
+            showBot(requirements);
+            if (requirements === "Sorry, that query is not supported. Try again with a supported query ID.") {
+              // Matches error message in bot.py (specify_requirements)
+              inProgress = false; // Do not proceed to the second step
+            } else {
+              inProgress = true;  // Update :: have to wait until user inputs their data to generate an answer
+            }
+          },
+          error: handleError
+        });
+      }
+
+      /**
+       * SECOND STEP :: POST request to process input user data and display final answer.
+       * Once the final answer for the current question is answered, the process closes (inProgress = False).
+       */ 
+      function getAnswer(requirementsData) {
+        // Get user data for the requirements and map them together
+        var userData = $("#textInput").val();
+        showUser(userData);
+        console.log("Received user data for requirements: " + userData);
+        mappedReqValues = getMappedReqValues(requirementsData, userData)
+        showBot("Loading...")
+
+        $.ajax({
+          type: 'POST',
+          url: '/answer',
+          data: JSON.stringify(mappedReqValues), // mappedReqValues dict is passed to Python for the bot's logic adapters to answer
+          contentType: 'application/json',
+  
+          success: function(answer) { 
+            showBot(answer)
+            inProgress = false; // Update :: answer given, ready to receive next question
+          },
+          error: handleError
+        })
+      };
+
+
+      // --- Respond to user actions ---
+      function botProcess() {
+        if(inProgress == false) {
+          // Bot is looking for another number to start answering a question.
+          getRequirements();
+        } else {
+          // Bot is processing the user's data and returns the answer.
+          getAnswer(requirementsData)
+        }
+      }
+
+      // "Enter"
+      $("#textInput").keypress(function(e) {
+        if ((e.which == 13) && document.getElementById("textInput").value != "") {
+          botProcess();
+        }
+      });
+
+      // Click "Send"
+      $("#buttonInput").click(function() {
+        if (document.getElementById("textInput").value != "") {
+          botProcess();
+        }
+      })      
+    </script>
+
+  </body>
+</html>
